@@ -21,8 +21,12 @@ package it.geosolutions.geostore.services.rest.utils;
 
 import it.geosolutions.geostore.core.dao.util.PwEncoder;
 import it.geosolutions.geostore.core.model.User;
+import it.geosolutions.geostore.core.model.enums.Role;
 import it.geosolutions.geostore.services.UserService;
 import it.geosolutions.geostore.services.exception.NotFoundServiceEx;
+
+import java.util.List;
+import java.util.Map;
 
 import org.apache.cxf.configuration.security.AuthorizationPolicy;
 import org.apache.cxf.interceptor.Fault;
@@ -45,8 +49,13 @@ public class GeoStoreAuthenticationInterceptor extends AbstractPhaseInterceptor<
     private static final Logger LOGGER = Logger.getLogger(GeoStoreAuthenticationInterceptor.class);
 
     private UserService userService;
-
-	/**
+    
+    private boolean autoCreateUsers = false;
+    private Role newUsersRole = Role.USER;
+    private NewPasswordStrategy newUsersPassword = NewPasswordStrategy.NONE;
+    private String newUsersPasswordHeader = "";
+    
+    /**
 	 * @param userService the userService to set
 	 */
 	public void setUserService(UserService userService) {
@@ -56,8 +65,26 @@ public class GeoStoreAuthenticationInterceptor extends AbstractPhaseInterceptor<
 	public GeoStoreAuthenticationInterceptor() {
         super(Phase.UNMARSHAL);
     }
+	
+    public void setAutoCreateUsers(boolean autoCreateUsers) {
+		this.autoCreateUsers = autoCreateUsers;
+	}
+    
+    
 
-    /* (non-Javadoc)
+	public void setNewUsersRole(Role newUsersRole) {
+		this.newUsersRole = newUsersRole;
+	}
+
+	public void setNewUsersPassword(NewPasswordStrategy newUsersPassword) {
+		this.newUsersPassword = newUsersPassword;
+	}
+
+	public void setNewUsersPasswordHeader(String newUsersPasswordHeader) {
+		this.newUsersPasswordHeader = newUsersPasswordHeader;
+	}
+
+	/* (non-Javadoc)
      * @see org.apache.cxf.interceptor.Interceptor#handleMessage(org.apache.cxf.message.Message)
      */
     @Override
@@ -90,16 +117,34 @@ public class GeoStoreAuthenticationInterceptor extends AbstractPhaseInterceptor<
             String encodedPw = null;
             try {
 				user =  userService.get(username);
-				encodedPw = PwEncoder.encode(password);
 			} catch (NotFoundServiceEx e) {
 	            if(LOGGER.isInfoEnabled())
 	            	LOGGER.info("Requested user not found: " + username);
-	            throw new AccessDeniedException("Not authorized");
+	            
+				if (autoCreateUsers) {
+					if (LOGGER.isInfoEnabled()) {
+						LOGGER.info("Creating now");
+					}
+					user = new User();
+					user.setName(username);
+					
+					password = getNewUserPassword(message, username);					
+					user.setNewPassword(password);					
+					user.setRole(newUsersRole);
+					try {
+						user.setId(userService.insert(user));
+					} catch (Exception e1) {
+						throw new AccessDeniedException(
+								"Not able to create new user");
+					}
+				} else {
+					throw new AccessDeniedException("Not authorized");
+				}            
 			} catch (Exception e) {
 	            	LOGGER.error("Exception while checking pw: " + username, e);
 	            throw new AccessDeniedException("Authorization error");
 			}
-
+            encodedPw = PwEncoder.encode(password);
             if( ! encodedPw.equalsIgnoreCase(user.getPassword())) {
 	            if(LOGGER.isInfoEnabled())
 	            	LOGGER.info("Bad pw for user " + username);
@@ -118,5 +163,22 @@ public class GeoStoreAuthenticationInterceptor extends AbstractPhaseInterceptor<
 
         message.put(SecurityContext.class, securityContext);
     }
+
+	private String getNewUserPassword(Message message, String username) {
+		switch(newUsersPassword) {
+			case NONE:
+				return "";
+			case USERNAME:
+				return username;
+			case FROMHEADER:
+				Map<String, List<String>> headers = (Map<String, List<String>>)message.get(Message.PROTOCOL_HEADERS);
+				if(headers.containsKey(newUsersPasswordHeader)) {
+					return headers.get(newUsersPasswordHeader).get(0);
+				}
+				return "";
+			default:
+				return "";
+		}
+	}
     
 }
