@@ -22,6 +22,7 @@
 
 	<security:http auto-config="true" create-session="never" >
 		<security:http-basic entry-point-ref="restAuthenticationEntryPoint"/>
+		<security:custom-filter position="PRE_AUTH_FILTER" ref="sessionFilter" />
 		<security:anonymous />
 	</security:http>
 	<!-- Entry point -->
@@ -32,9 +33,21 @@
 	<bean id="geoStoreUserServiceAuthenticationProvider"
 		class="it.geosolutions.geostore.services.rest.security.UserServiceAuthenticationProvider">
 	</bean>
+	
+	<bean id="sessionFilter"
+		class="it.geosolutions.geostore.services.rest.security.WebServicePreAuthenticationFilter">
+		<property name="webServiceUrlTemplate" value="http://localhost:8080/opensdi/mvc/session/username/{key}"/>
+		<property name="headerProperty" value="X-SESSION-ID"/>
+		<property name="authenticationManager" ref="authenticationManager" />
+	</bean>
+	
+	<bean id="preAuthenticationProvider"
+		class="it.geosolutions.geostore.services.rest.security.PreAuthenticationProvider">
+	</bean>
 
 	<!-- Inject into the Authentication Manager the GeoStore Auth Provider -->
-	<security:authentication-manager>
+	<security:authentication-manager alias="authenticationManager">
+		<security:authentication-provider ref='preAuthenticationProvider' />
 		<security:authentication-provider ref='geoStoreUserServiceAuthenticationProvider' />
 	</security:authentication-manager>
 
