@@ -30,9 +30,11 @@ package it.geosolutions.geostore.cli;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import java.io.File;
 import java.io.IOException;
 import java.util.Optional;
 import org.junit.Test;
+import io.vavr.control.Either;
 
 public class H2ToPgSQLExporterInputTest extends H2ToPgSQLExporterTest {
     
@@ -40,10 +42,10 @@ public class H2ToPgSQLExporterInputTest extends H2ToPgSQLExporterTest {
     public void calidInputPath() throws IOException {
         exporter.inputPath = getTestDbPath(); 
 
-        Optional<String> path = exporter.validateInputFile();
+        Either<String, File> path = exporter.validateInputFile();
 
-        assertTrue(path.isPresent());
-        assertFalse(path.get().endsWith(".h2.db"));
+        assertTrue(path.isRight());
+        assertFalse(path.getOrNull().getAbsolutePath().endsWith(".h2.db"));
     }
     
     @Test

@@ -47,6 +47,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.apache.commons.lang.StringUtils;
 import org.h2.tools.Script;
+import io.vavr.control.Either;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
@@ -59,20 +60,19 @@ public class H2ToPgSQLExporter implements Runnable {
     
     enum OutputType {
         STDOUT,
-        FILE,
-        INVALID
+        FILE
     }
     
     static class Output {
         public OutputType type;
-        public Optional<String> path;
+        public Optional<String> path = Optional.empty();
         
         private Output(OutputType type) {
             this.type = type;
         }
         
-        private Output(OutputType type, String path) {
-            this.type = type;
+        private Output(String path) {
+            this.type = OutputType.FILE;
             this.path = Optional.of(path);
         }
         
@@ -80,15 +80,11 @@ public class H2ToPgSQLExporter implements Runnable {
             return new Output(OutputType.STDOUT);
         }
         
-        static Output invalid() {
-            return new Output(OutputType.INVALID);
-        }
-        
         static Output path(String path) {
-            return new Output(OutputType.FILE, path);
+            return new Output(path);
         }
     }
-    
+
     @Parameters(paramLabel = "H2FILE", description = "path to the H2 database file to migrate", arity="1")
     String inputPath;
     
@@ -109,37 +105,45 @@ public class H2ToPgSQLExporter implements Runnable {
     
     @Override
     public void run() {
-        try {
-            Optional<String> sql = extractAndScript();
-            if (!sql.isPresent()) {
-                return;
-            }
-            Output output = validateOutputFile();
-            if (output.type == OutputType.INVALID) {
-                return;
-            } else if (output.type == OutputType.STDOUT) {
-                System.out.println(sql);
-            } else {
-                Files.write(Paths.get(output.path.get()), sql.get().getBytes(StandardCharsets.UTF_8));
-            }
-            System.out.println("Export done!");
-            
-        } catch (IOException e) {
-            System.err.println("Error writing the output file: " + e.getMessage());
-        }
+        String message = validateInputFile()
+            .flatMap(input -> extractAndScript(input))
+            .flatMap(script -> writeOutput(script))
+            .fold(e -> e, s -> "Export done!");
+       
+        System.out.println(message);
+    }
+
+    
+    Either<String, Boolean> writeOutput(String sql) {
+        return validateOutputFile()
+             .flatMap(output -> 
+                     output.type == OutputType.STDOUT ?
+                             writeToStdOut(sql) : 
+                             writeToFile(output.path.get(), sql)
+                     );
     }
 
 
-    Optional<String> extractAndScript() throws IOException {
-        Optional<String> script = exportH2AsScript();
-        if (!script.isPresent()) {
-            return Optional.empty();
+    private Either<String, Boolean> writeToStdOut(String sql) {
+        System.out.println(sql);
+        return Either.right(true);
+    }
+    
+    private Either<String, Boolean> writeToFile(String path, String sql) {
+        try {
+            Files.write(Paths.get(path), sql.getBytes(StandardCharsets.UTF_8));
+            return Either.right(true);
+        } catch (IOException e) {
+            return Either.left("Error writing to output file: " + e.getMessage());
         }
-        List<String> sortedInserts = filterInserts(script.get());
-        List<String> normalized = sortedInserts.stream().map(i -> normalizeInsert(i)).collect(Collectors.toList());
-        int lastId = getLastUsedId(normalized);
-        String sql = createSql(normalized, lastId);
-        return Optional.of(sql);
+    }
+    
+    Either<String, String> extractAndScript(File input) {
+        return exportH2AsScript(input)
+                .map(script -> filterInserts(script))
+                .map(sortedInserts -> sortedInserts.stream().map(i -> normalizeInsert(i)).collect(Collectors.toList()))
+                .map(normalized -> createSql(normalized, getLastUsedId(normalized)));
+        
     }
 
 
@@ -192,21 +196,17 @@ public class H2ToPgSQLExporter implements Runnable {
     }
 
 
-    Optional<String> exportH2AsScript() throws IOException {
-        Optional<String> h2path = validateInputFile();
-        if (!h2path.isPresent()) {
-            System.err.println("H2 input file not found: " + inputPath);
-            return Optional.empty();
-        }
+    Either<String, String> exportH2AsScript(File input) {
         try(ByteArrayOutputStream os = new ByteArrayOutputStream()) {
             try {
-                Script.execute("jdbc:h2:" + h2path.get(), username, password, os);
+                Script.execute("jdbc:h2:" + input.getAbsolutePath(), username, password, os);
                 String script = new String(os.toByteArray(), StandardCharsets.UTF_8);
-                return Optional.of(script);
+                return Either.right(script);
             } catch(SQLException e) {
-                System.err.println("Error extracting data from the H2 database: " + e.getMessage());
-                return Optional.empty();
+                return Either.left("Error extracting data from the H2 database: " + e.getMessage());
             }
+        } catch (IOException e1) {
+            return Either.left("Error extracting data from the H2 database: " + e1.getMessage());
         }
     }
     
@@ -223,10 +223,10 @@ public class H2ToPgSQLExporter implements Runnable {
     }
 
 
-    Optional<String> validateInputFile() {
+    Either<String, File> validateInputFile() {
         return exists(inputPath) ?
-                Optional.of(removeExtension(inputPath)) :
-                Optional.empty();
+                Either.right(removeExtension(inputPath)) :
+                Either.left("H2 file not found: "+ inputPath);
     }
 
 
@@ -249,21 +249,21 @@ public class H2ToPgSQLExporter implements Runnable {
         return path + ".sql";
     }
     
-    private String removeExtension(String path) {
+    private File removeExtension(String path) {
         if(path.indexOf(".") != -1)
-            return path.substring(0, path.indexOf("."));
-        return path;
+            return new File(path.substring(0, path.indexOf(".")));
+        return new File(path);
     }
 
 
-    public Output validateOutputFile() {
+    public Either<String, Output> validateOutputFile() {
         if (outputPath == null)
-            return Output.stdout();
+            return Either.right(Output.stdout());
         File folder = new File(outputPath).getAbsoluteFile().getParentFile();
         if (folder.exists() && folder.isDirectory()) {
-            return Output.path(addScriptExtension(outputPath));
+            return Either.right(Output.path(addScriptExtension(outputPath)));
         }
-        return Output.invalid();
+        return Either.left("The destination file folder does not exist or is not a folder");
     }
 
 }
